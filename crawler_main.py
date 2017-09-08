@@ -8,6 +8,8 @@ from multiprocessing import Pool,Manager
 import queue
 import time
 import random
+import socket
+import gc
 
 #Python beginner practise only.
 #No commercial profit
@@ -26,7 +28,7 @@ parameter_global_js = OrderedDict({
 url_demo = "http://m.kukudm.com/comiclist/6/42702/1.htm"
 url_top_level_domain = "http://m.kukudm.com"
 url_bleach_home_page = "http://m.kukudm.com/comiclist/6/"
-crawler_max_count = 100
+crawler_max_count = 700
 
 
 def get_pic_url_from_episode_url(dict_pic, url_episode):
@@ -44,12 +46,13 @@ def get_pic_url_from_episode_url(dict_pic, url_episode):
     print("start to open url : %s" % str(url_episode))
     html_episode = urllib.request.urlopen(url_req)
 
-
+    print("Start to get BeautifulSoup from Html.")
     bs = BeautifulSoup(html_episode, "html.parser")
+    html_episode.close()
     print("Got BeautifulSoup from Html.")
 
     for i in bs.body.find_all("script", {"language": "javascript"}):
-        print("entered for each JS, JS is %s" % i.get_text())
+        #print("entered for each JS, JS is %s" % i.get_text())
 
         txt_img = i.get_text().replace('''document.write("''', "")
         tag_img = BeautifulSoup(txt_img, "html.parser").find()
@@ -66,6 +69,23 @@ def get_pic_url_from_episode_url(dict_pic, url_episode):
         else:
             return 0
 
+def retry_urlretrieve(file_url, file_save_path, retry_cout):
+    if retry_cout <= 0:
+        raise EnvironmentError("Max retry meets.")
+    try:
+        print("start to save pic from img_url: %s" % file_url)
+        urllib.request.urlretrieve(file_url, file_save_path)
+        print("Finish to save pic from img_url: %s" % file_url)
+        # sometimes I may get error like:
+        # urllib.error.ContentTooShortError: <urlopen error retrieval incomplete: got only 4063 out of 159690 bytes>
+        # so I want to re-try one time.
+        # if failed again, then give up.
+    except:
+        print("Try urlretrieve again.")
+        retry_cout -= 1
+        retry_urlretrieve(file_url, file_save_path, retry_cout)
+
+
 def save_pic_from_url_dict(dict_pic, folder_title):
     time.sleep(1)
     path_parent = "download/"
@@ -79,17 +99,7 @@ def save_pic_from_url_dict(dict_pic, folder_title):
     for item in dict_pic:
         time.sleep(2)
         img_url = urllib.request.quote(dict_pic[item], safe='/:?=')
-        print("start to save pic from img_url: %s" % img_url)
-        try:
-            urllib.request.urlretrieve(img_url, str(os.path.join(path_parent, folder_title))+"//%s.jpg" % num)
-            #sometimes I may get error like:
-            #urllib.error.ContentTooShortError: <urlopen error retrieval incomplete: got only 4063 out of 159690 bytes>
-            #so I want to re-try one time.
-            #if failed again, then give up.
-        except urllib.error.ContentTooShortError:
-            urllib.request.urlretrieve(img_url, str(os.path.join(path_parent, folder_title)) + "//%s.jpg" % num)
-        except Exception as e:
-            print("Error code is %s" % e.code)
+        retry_urlretrieve(img_url, str(os.path.join(path_parent, folder_title))+"//%s.jpg" % num, 6)
         num += 1
 
 def crawler_work(q):
@@ -99,7 +109,7 @@ def crawler_work(q):
     if crawler_max_count <= 0:
         return 1
     try:
-        dt = q.get()
+        dt = q.get_nowait()
         #debug code to ignore some pages
         #if dt[0] == "死神_第686话 感动完结" \
         #       or dt[0] == "死神_第685话 15年的相伴 下期完结!"\
@@ -129,22 +139,30 @@ def crawler_work(q):
         crawler_max_count -= 1
         print("crawler_max_count is %s" % crawler_max_count)
         return 1
-
+'''
 def get_job_for_crawler(q):
     result = crawler_work(q)
     if result == 1:
-        time.sleep(2)
+        
         get_job_for_crawler(q)
     else:
         return 0
+'''
+def get_job_for_crawler(q):
+    time.sleep(1)
+    return crawler_work(q)
+
 
 if __name__ == "__main__":
+    socket.timeout(30)
 
     url_req = urllib.request.Request(url_bleach_home_page)
     url_req.add_header("User-Agent", UA_iphone_6p)
     html_home_page = urllib.request.urlopen(url_req)
 
     lst = BeautifulSoup(html_home_page, "html.parser").find("div", {"class": "classopen"}).find_all("li")
+
+    html_home_page.close()
 
     #single processing
     que = queue.Queue()
@@ -153,10 +171,19 @@ if __name__ == "__main__":
         v = url_top_level_domain + c.find("a").get("href")
         que.put_nowait((str(k), str(v)))
 
-    result = get_job_for_crawler(que)
+    #result = get_job_for_crawler(que)
 
-    if result == 0:
-        print("Done.")
+    _quit = 1
+    _force_quit = 1200
+    while _quit == 1:
+        _quit = get_job_for_crawler(que)
+        _force_quit -= 1
+        gc.collect()
+        if _force_quit <= 0:
+            _quit = 0
+
+    if _quit == 0:
+       print("Done.")
     else:
         print("Unknown error.")
 
